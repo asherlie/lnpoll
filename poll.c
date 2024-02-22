@@ -1,4 +1,5 @@
 #include <lfh.h>
+#include <stdint.h>
 /*
 users can use localnotify to send eth packets to vote on polls
 
@@ -30,15 +31,24 @@ this is cool because it uses both locnotify and lfhash
 register_lfhash(poll, addr[6], int)
 */
 
-a poll is an integer for number of options and 
+/*
+ * a poll is an integer for number of options and 
+ * 
+ * struct poll{
+ *     4 options;
+ *     addr -> uint;
+ * };
+*/
 
-struct poll{
-    4 options;
-    addr -> uint;
+struct maddr{
+    uint8_t addr[6];
 };
 
+register_lockfree_hash(struct maddr, uint16_t, poll_results)
+
 struct poll{
-    int x;
+    uint16_t n_opts;
+    poll_results res;
 };
 
 int main(){
