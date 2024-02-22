@@ -44,12 +44,26 @@ struct maddr{
     uint8_t addr[6];
 };
 
-register_lockfree_hash(struct maddr, uint16_t, poll_results)
+/* TODO: should this not take a *? */
+uint16_t hash(struct maddr* a){
+    uint16_t ret = 0;
+    for (int i = 0; i < 6; ++i){
+        ret += a->addr[i];
+    }
+    return ret;
+}
+
+register_lockfree_hash(struct maddr*, uint16_t, poll_results)
 
 struct poll{
     uint16_t n_opts;
     poll_results res;
 };
+
+void init_poll(struct poll* p, uint16_t n_opts){
+    p->n_opts = n_opts;
+    init_poll_results(&p->res, 10, hash);
+}
 
 int main(){
 }
