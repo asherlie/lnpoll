@@ -106,14 +106,16 @@ register_lockfree_hash(struct poll_hdr*, poll_results, polls)
  * };
 */
 
-void init_poll(polls* p, uint16_t n_opts){
-    /*init_poll_results(&p->res, 100, hash);*/
-    init_polls(p, 100, hash_ph);
-}
+/*
+ * void init_poll(polls* p, uint16_t n_opts){
+ *     [>init_poll_results(&p->res, 100, hash);<]
+ *     init_polls(p, 100, hash_ph);
+ * }
+*/
 
 int main(int argc, char* argv[]){
     uint8_t local_addr[6];
-    struct poll p;
+    /*struct poll p;*/
     char* if_name;
 
     if (argc < 2) {
@@ -121,8 +123,9 @@ int main(int argc, char* argv[]){
     }
 
     if_name = argv[1];
-    init_poll(&p, 4);
+    /*init_poll(&p, 4);*/
     get_local_addr(if_name, local_addr);
+    p_maddr(local_addr);
 }
 
 /*
