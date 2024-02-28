@@ -68,7 +68,14 @@ struct maddr{
 struct poll_hdr{
     struct maddr creator;
     uint8_t poll_id;
-    uint16_t n_opts, creator_vote;
+    uint16_t n_opts;
+};
+
+// this struct is used to send votes
+// polls are stored locally in lfhashes
+struct poll_vote{
+    struct poll_hdr p;
+    uint16_t vote;
 };
 
 /* TODO: should this not take a *? */
