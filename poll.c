@@ -68,6 +68,7 @@ struct maddr{
 struct poll_hdr{
     struct maddr creator;
     uint8_t poll_id;
+    char poll_name[11];
     uint16_t n_opts;
 };
 
@@ -76,6 +77,11 @@ struct poll_hdr{
 struct poll_vote{
     struct poll_hdr p;
     uint16_t vote;
+};
+
+// local representation of a poll
+struct poll{
+    uint16_t* votes;
 };
 
 /* TODO: should this not take a *? */
@@ -94,8 +100,19 @@ uint16_t hash_ph(struct poll_hdr* ph){
 /* TODO: should maddr be a *? */
 // why is it phdr: maddr: int?
 // it should probably be maddr: list of poll_hdrs, 
-register_lockfree_hash(struct maddr*, uint16_t, poll_results)
-register_lockfree_hash(struct poll_hdr*, poll_results, polls)
+/*
+ * register_lockfree_hash(struct maddr*, uint16_t, poll_results)
+ * register_lockfree_hash(struct poll_hdr*, poll_results, polls)
+*/
+// v is an atomic map of results for a given poll
+register_lockfree_hash(struct poll_hdr*, _Atomic uint16_t*, polls)
+
+/*
+ * a poll needs to be:
+ *     indexable by poll_hdr
+ *     indexable by creator maddr + name
+ * register_lockfree_hash();
+*/
 
 /*
  * struct poll{
