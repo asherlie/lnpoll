@@ -1,6 +1,7 @@
 #include <lfh.h>
 #include <localnotify.h>
 #include <stdint.h>
+#include <stdatomic.h>
 /*
 users can use localnotify to send eth packets to vote on polls
 
@@ -69,6 +70,9 @@ struct poll_hdr{
     struct maddr creator;
     uint8_t poll_id;
     char poll_name[11];
+    // TODO: remove n_opts if possible, or create a new struct
+    // to use as key for lfh
+    // this way the user won't need to provide n_opts from cli
     uint16_t n_opts;
 };
 
@@ -80,8 +84,8 @@ struct poll_vote{
 };
 
 // local representation of a poll
-struct poll{
-    uint16_t* votes;
+struct results{
+    uint16_t* _Atomic votes;
 };
 
 /* TODO: should this not take a *? */
@@ -93,8 +97,8 @@ uint16_t hash_m(struct maddr* a){
     return ret;
 }
 
-uint16_t hash_ph(struct poll_hdr* ph){
-    return hash_m(&ph->creator);
+uint16_t hash_ph(struct poll_hdr ph){
+    return hash_m(&ph.creator);
 }
 
 /* TODO: should maddr be a *? */
@@ -105,7 +109,8 @@ uint16_t hash_ph(struct poll_hdr* ph){
  * register_lockfree_hash(struct poll_hdr*, poll_results, polls)
 */
 // v is an atomic map of results for a given poll
-register_lockfree_hash(struct poll_hdr*, _Atomic uint16_t*, polls)
+// TODO: test ith poll_hdr*, seems intuitively like this won't work but make sure of that
+register_lockfree_hash(struct poll_hdr, struct results, polls)
 
 /*
  * a poll needs to be:
@@ -130,10 +135,30 @@ register_lockfree_hash(struct poll_hdr*, _Atomic uint16_t*, polls)
  * }
 */
 
+// insert polls uses explicit struct poll_hdr that is received using lnotify
+
+void vote(polls* p, struct maddr creator, uint8_t poll_id, char* poll_name, uint16_t n_opts, uint16_t vote){
+    _Bool found;
+    struct poll_hdr hdr = {.creator = creator, .poll_id = poll_id, .n_opts = n_opts};
+    struct results res;
+    memset(hdr.poll_name, 0, sizeof(hdr.poll_name));
+    strcpy(hdr.poll_name, poll_name);
+    res = lookup_polls(p, hdr, &found);
+
+    if (!found || !res.votes) {
+        return;
+    }
+
+    atomic_fetch_add(&res.votes[vote], 1);
+}
+
+void p_results(){
+}
+
 int main(int argc, char* argv[]){
     uint8_t local_addr[6];
-    /*struct poll p;*/
     char* if_name;
+    polls p;
 
     if (argc < 2) {
         return 1;
@@ -143,6 +168,7 @@ int main(int argc, char* argv[]){
     /*init_poll(&p, 4);*/
     get_local_addr(if_name, local_addr);
     p_maddr(local_addr);
+    init_polls(&p, 100, hash_ph);
 }
 
 /*
