@@ -14,7 +14,7 @@ maybe we start polling, expecting a certain amount of responses
 ./poll --start-poll <name> <option 0> <option 1> <...> // start a poll with a name and >= 2 options
 ./poll --vote-poll <name> <int option>
 ./poll --force-close-poll <name>
-./poll --list-polls
+./poll --list-polls --unvoted
 ./poll --get-results <name>
 
 each new poll needs either a time limit or a max number of responses
@@ -69,7 +69,7 @@ struct maddr{
 struct poll_hdr{
     struct maddr creator;
     uint8_t poll_id;
-    char poll_name[11];
+    char poll_name[40];
     // TODO: remove n_opts if possible, or create a new struct
     // to use as key for lfh
     // this way the user won't need to provide n_opts from cli
@@ -184,7 +184,26 @@ void test(polls* p, uint16_t n_opts){
     struct poll_hdr hdr = {0};
     struct results res = {.votes = calloc(n_opts, sizeof(uint16_t* _Atomic))};
     
-    strcpy(hdr.poll_name, "asherpol");
+    // ah, i see what should be done - the initiator should send out an optional descriptor
+    // as part of poll_name - poll_memo, 
+    // NVM! add a field for poll_memo!
+    // this will be always inserted as NULL
+    // it will be stored locally but will not be needed to lookup a poll
+    // perhaps it should live in the results struct! this way we can access it during lookup only
+    // we'll foreach() when using the --list-polls --unvoted flag
+    
+
+/*
+ *     OOPS! the uint16_t votes won't work. users need to be held accountable. it must be another lfh
+ *     addressable by maddr -> uint16_t
+ * 
+ *     my idea of memos stored locally can still work, just needs to go within a struct
+ *                                         ~~~~ ~~~~ ~~~~ ~~~~
+ *     that can be intermediary - polls[hdr] -> struct results: memo, lfh_maddr_to_uint
+ *                                         ~~~~ ~~~~ ~~~~ ~~~~
+ * 
+*/
+    strcpy(hdr.poll_name, "asherpol, please mark");
     hdr.n_opts = n_opts;
     hdr.poll_id = 9;
     insert_polls(p, hdr, res);
