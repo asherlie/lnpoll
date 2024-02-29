@@ -137,6 +137,7 @@ register_lockfree_hash(struct poll_hdr, struct results, polls)
 
 // insert polls uses explicit struct poll_hdr that is received using lnotify
 
+// the actual vote can be much simpler than this because it'll have access to explicit poll_hdr
 void vote(polls* p, struct maddr creator, uint8_t poll_id, char* poll_name, uint16_t n_opts, uint16_t vote){
     _Bool found;
     struct poll_hdr hdr = {.creator = creator, .poll_id = poll_id, .n_opts = n_opts};
@@ -149,10 +150,50 @@ void vote(polls* p, struct maddr creator, uint8_t poll_id, char* poll_name, uint
         return;
     }
 
+    // increment locally? nope i should probably do this only from the lnotify thread
+    // i think it'll receive a copy from sender as well!
+    // vote thread will handle this
+    //
+    // vote() will just push a lnotify message
     atomic_fetch_add(&res.votes[vote], 1);
 }
 
-void p_results(){
+_Bool p_results(polls* p, struct maddr creator, uint8_t poll_id, char* poll_name, uint16_t n_opts){
+    _Bool found;
+    struct poll_hdr hdr = {.creator = creator, .poll_id = poll_id, .n_opts = n_opts};
+    struct results res;
+    memset(hdr.poll_name, 0, sizeof(hdr.poll_name));
+    strcpy(hdr.poll_name, poll_name);
+    res = lookup_polls(p, hdr, &found);
+
+    if (!found) {
+        return 0;
+    }
+
+    printf("POLL RESULTS FOR \"%s\":\n", poll_name);
+    printf("  [%d", atomic_load(res.votes));
+    for (int i = 1; i < n_opts; ++i) {
+        printf(", %d", atomic_load(&res.votes[i]));
+    }
+    puts("]");
+
+    return 1;
+}
+
+void test(polls* p, uint16_t n_opts){
+    struct poll_hdr hdr = {0};
+    struct results res = {.votes = calloc(n_opts, sizeof(uint16_t* _Atomic))};
+    
+    strcpy(hdr.poll_name, "asherpol");
+    hdr.n_opts = n_opts;
+    hdr.poll_id = 9;
+    insert_polls(p, hdr, res);
+
+    vote(p, hdr.creator, hdr.poll_id, hdr.poll_name, hdr.n_opts, 8);
+    vote(p, hdr.creator, hdr.poll_id, hdr.poll_name, hdr.n_opts, 8);
+    vote(p, hdr.creator, hdr.poll_id, hdr.poll_name, hdr.n_opts, 0);
+
+    p_results(p, hdr.creator, hdr.poll_id, hdr.poll_name, hdr.n_opts);
 }
 
 int main(int argc, char* argv[]){
@@ -169,6 +210,8 @@ int main(int argc, char* argv[]){
     get_local_addr(if_name, local_addr);
     p_maddr(local_addr);
     init_polls(&p, 100, hash_ph);
+
+    test(&p, 10);
 }
 
 /*
