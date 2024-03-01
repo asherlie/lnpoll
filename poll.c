@@ -1,5 +1,7 @@
 #include <lfh.h>
 #include <localnotify.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <stdint.h>
 #include <stdatomic.h>
 // NOTE: keys must be memset to 0 to zero the garbage bytes
@@ -24,6 +26,44 @@
 //
 //       unix sockets will handle passing of messages ONLY
 /*
+ *
+ *
+ * final design:
+ *  unix sock accept() thread:
+ *      NOTE: at first, i can have this thread not spawn any more threads and just call some handler functions
+ *            this is fine because the underlying recv queue will not miss any messages even if we take a while
+ *      awaits new connections, once one is received spawn a short lived communication thread
+ *          comm thread will:
+ *              read command from user
+ *              issue lnotifies if required (this is needed even to create a local new poll)
+ *              respond with output packaged in a 1024 byte constant length string
+ *              close the connection after this message has been sent
+ *              exit
+ *  
+ *  TODO: just realized that if these two threads are separate we run the risk of
+ *        a threadsafety issue where we ignore a message relevant for the other thread
+ *        to remedy this i may need to combine these packets somehow
+ *        or have one thread pop both
+ *        this can use a timeout
+ *        or i can tweak the recv function
+ *
+ *        simplest approach will be to have a union of both structs be sent
+ *          this union will also have a _Bool for which is set
+ *          nvm, won't even need a union, we can set which is gg
+ *
+ *  new poll receive thread:
+ *      continuously calls lnrecv() waiting for struct poll_pkt messages
+ *      call insert_h
+ *
+ *  vote receive thread:
+ *      continuously calls lnrecv() waiting for struct poll_vote_pkt messages
+ *
+ *  the ...union of these two will actually be used (get it?)
+ *  this thread will be the lnotify_recv_thread()
+ *      continuously calls lnrecv() waiting for the union struct
+ *      it can then take its sweet time voting or inserting a new poll
+ *      we will not lose any packets, as the buffer will be kept intact
+ *
 users can use localnotify to send eth packets to vote on polls
 
 users cannot spoof the src addr field of packets, so it's verifiable where they come from
@@ -120,32 +160,24 @@ register_lockfree_hash(struct poll_hdr, struct poll, polls)
 // polls are stored locally in lfhashes
 // actual sent packets:
 
+enum pkt_type {POLL_PKT = 0, VOTE_PKT};
+
 struct poll_pkt{
+    enum pkt_type type;
     struct poll_hdr hdr;
     struct poll_info info;
 };
 
 struct poll_vote_pkt{
-    struct poll_hdr p;
+    enum pkt_type type;
+    struct poll_hdr hdr;
     uint16_t vote;
 };
 
-    struct poll _lookup_polls(polls* l, struct poll_hdr key, _Bool* found) {
-        struct poll ret;
-        struct poll_hdr* kptr;
-        memset(&ret, 0, sizeof(struct poll)); 
-        *found = 0; 
-        foreach_entry_kptrv(polls, l, key, kptr, ret) 
-            if (!memcmp(kptr, &key, sizeof(struct poll_hdr))){ 
-                *found = 1; 
-                /* interesting! this is only failing with pointer keys! value can be anything, pointer KEYS are bad */ 
-                return ret; 
-            } 
-        } 
-        return ret; 
-    } 
-
-// local representation of a poll
+union packet{
+    struct poll_pkt new_poll;
+    struct poll_vote_pkt vote;
+};
 
 /* TODO: should this not take a *? */
 uint16_t hash_m(struct maddr* a){
@@ -340,7 +372,111 @@ struct poll create_spoof_p(char* poll_name, char* memo){
     return p;
 }
 
+struct command_buf{
+    char cmd[1024];
+};
+
+// this is only meant to be passed around locally, name is a pointer to the stack
+struct command{
+    _Bool create, vote, list, get_results, unvoted_only;
+    char* name;
+    char* memo;
+};
+
+void p_command(struct command* c){
+    printf("create: %d, vote: %d, list: %d, get_results: %d, unvoted_only: %d\nname: \"%s\", memo: \"%s\"\n",
+        c->create, c->vote, c->list, c->get_results, c->unvoted_only, c->name, c->memo);
+}
+
+void parse_args(struct command_buf* args, struct command* c){
+    char** set_next = NULL;
+    for (char* i = args->cmd, * sp = strchr(args->cmd, ' '); i && *i; sp = strchr(i, ' ')) {
+        if(sp)*sp = 0;
+
+        if (set_next) {
+            // this assumes that command_buf is left intact, if not - strdup(i)
+            *set_next = i;
+            set_next = NULL;
+        }
+        else if (!strcmp(i, "--start-poll")) {
+            c->create = 1;
+        }
+        else if (!strcmp(i, "--name")) {
+            set_next = &c->name;
+        }
+        else if (!strcmp(i, "--memo")) {
+            set_next = &c->memo;
+        }
+        else if (!strcmp(i, "--vote")) {
+            c->vote = 1;
+        }
+        else if (!strcmp(i, "--list")) {
+            c->list = 1;
+        }
+        else if (!strcmp(i, "--get-results")) {
+            c->get_results = 1;
+        }
+        else if (!strcmp(i, "--unvoted")) {
+            c->unvoted_only = 1;
+        }
+        /**sp = 1;*/
+        /*i = sp+1;*/
+        /*i = sp if sp == NULL*/
+        if (!sp) {
+            break;
+        }
+        i = sp+1;
+    }
+}
+
+struct command process_input(int psock){
+    struct command ret;
+    struct command_buf buf;
+    read(psock, buf.cmd, sizeof(buf.cmd));
+    parse_args(&buf, &ret);
+    return ret;
+}
+
+void eval_command(struct command* cmd){
+    
+}
+
+/* thread definitions */
+
+// set up a unix socket, bind to a fn, await connections
+void* cmd_thread(void* fpv){
+    char* fp = fpv;
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0), psock;
+    struct sockaddr_un addr = {0};
+    struct command cmd;
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, fp, sizeof(addr.sun_path));
+    if (bind(sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1){
+        return NULL;
+    }
+    listen(sock, 0);
+
+    while (1) {
+        psock = accept(sock, NULL, NULL);
+        cmd = process_input(psock);
+        eval_command(&cmd);
+    }
+    return NULL;
+}
+
+/* end thread definitions */
+
+
+/*
+ * register_ln_payload(name, iface, payload, payload_identifier
+ * recv_name()
+ * broadcast_name()
+*/
+register_ln_payload(poll_pack, "wlp3s0", union packet, 0) 
+
 void test(polls* p, uint16_t n_opts){
+    union packet P;
+    broadcast_poll_pack(P);
     struct poll_hdr hdr = {0};
     /*struct results res = {.votes = calloc(n_opts, sizeof(uint16_t* _Atomic))};*/
     /*struct poll pl;*/
@@ -402,7 +538,18 @@ void test(polls* p, uint16_t n_opts){
     list_polls(p, NULL, &poll_id, NULL, 1, 1);
 }
 
+void parse_args_test(char* str){
+    struct command c = {0};
+    struct command_buf cb = {0};
+    /*strcpy(cb.cmd, "--start-poll --name name_is_x --memo heyo");*/
+    strcpy(cb.cmd, str);
+    parse_args(&cb, &c);
+    p_command(&c);
+}
+
 int main(int argc, char* argv[]){
+    parse_args_test(argv[1]);
+    exit(0);
     uint8_t local_addr[6];
     char* if_name;
     polls p;
