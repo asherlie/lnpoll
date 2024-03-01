@@ -179,6 +179,8 @@ union packet{
     struct poll_vote_pkt vote;
 };
 
+register_ln_payload(poll_pack, "wlp3s0", union packet, 0) 
+
 /* TODO: should this not take a *? */
 uint16_t hash_m(struct maddr* a){
     uint16_t ret = 0;
@@ -437,8 +439,13 @@ struct command process_input(int psock){
     return ret;
 }
 
-void eval_command(struct command* cmd){
-    
+void send_output(int psock, struct command_buf* cb){
+    write(psock, cb->cmd, sizeof(cb->cmd));
+}
+
+struct command_buf eval_command(struct command* cmd){
+    struct command_buf ret = {0};
+    return ret;
 }
 
 /* thread definitions */
@@ -449,6 +456,7 @@ void* cmd_thread(void* fpv){
     int sock = socket(AF_UNIX, SOCK_STREAM, 0), psock;
     struct sockaddr_un addr = {0};
     struct command cmd;
+    struct command_buf output;
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, fp, sizeof(addr.sun_path));
     if (bind(sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1){
@@ -459,12 +467,45 @@ void* cmd_thread(void* fpv){
     while (1) {
         psock = accept(sock, NULL, NULL);
         cmd = process_input(psock);
-        eval_command(&cmd);
+        output = eval_command(&cmd);
+        send_output(psock, &output);
+        close(psock);
     }
     return NULL;
 }
 
+void* lnotify_thread(void* arg){
+    _Bool success;
+    (void)arg;
+
+    while (1) {
+        /*broadcast*/
+        recv_poll_pack(&success);
+    }
+}
+
 /* end thread definitions */
+
+void client(int argc, char** argv, char* fp){
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    struct sockaddr_un addr = {0};
+    struct command_buf cb = {0};
+    char* p = cb.cmd;
+
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, fp, sizeof(addr.sun_path));
+
+    for (int i = 1; i < argc; ++i) {
+        p = stpcpy(p , argv[i]);
+    }
+
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1) {
+        return;
+    }
+    
+    // TODO: check bytes written
+    write(sock, cb.cmd, sizeof(cb.cmd));
+}
 
 
 /*
@@ -472,7 +513,6 @@ void* cmd_thread(void* fpv){
  * recv_name()
  * broadcast_name()
 */
-register_ln_payload(poll_pack, "wlp3s0", union packet, 0) 
 
 void test(polls* p, uint16_t n_opts){
     union packet P;
@@ -548,6 +588,7 @@ void parse_args_test(char* str){
 }
 
 int main(int argc, char* argv[]){
+    /*client(argv, argc);*/
     parse_args_test(argv[1]);
     exit(0);
     uint8_t local_addr[6];
