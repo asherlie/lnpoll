@@ -6,7 +6,10 @@
 #include <stdatomic.h>
 #include <pthread.h>
 
-#define SOCK_FN "/tmp/lnpoll.s"
+/*#define SOCK_FN "/tmp/lnpoll.s"*/
+// TODO: this file must be removed on shutdown
+// i should signal() for graceful shutdown
+#define SOCK_FN "/home/asher/lnpoll.s"
 // NOTE: keys must be memset to 0 to zero the garbage bytes
 // TODO: replace all local_addrs with something smarter
 // TODO: unix sockets will be used to send commands to daemon and receive output
@@ -334,11 +337,11 @@ _Bool p_results(polls* p, struct maddr creator, uint8_t poll_id, uint16_t n_opts
     return 1;
 }
 
-uint16_t list_polls(polls* p, struct maddr* creator, uint8_t* poll_id, uint16_t* n_opts, _Bool unvoted_only, _Bool show_results){
+uint16_t list_polls(polls* p, struct maddr* creator, uint8_t* poll_id, uint16_t* n_opts, _Bool unvoted_only, _Bool show_results, struct maddr* local_addr){
     /*go through all polls, filter by any provided args, print summary or contents of each*/
     struct poll_hdr ph;
     struct poll v;
-    struct maddr local_addr = {0};
+    /*struct maddr local_addr = {0};*/
     uint16_t ret = 0;
     _Bool found;
     for (uint16_t i = 0; i < p->n_buckets; ++i) {
@@ -351,8 +354,8 @@ uint16_t list_polls(polls* p, struct maddr* creator, uint8_t* poll_id, uint16_t*
             }
             v = atomic_load(&_ep->kv.v);
             // TODO: get_local_addr() should only be called once
-            get_local_addr("wlp3s0", local_addr.addr);
-            lookup_results(&v.r, local_addr, &found);
+            /*get_local_addr("wlp3s0", local_addr.addr);*/
+            lookup_results(&v.r, *local_addr, &found);
             if (unvoted_only && found) {
                 continue;
             }
@@ -447,13 +450,31 @@ void send_output(int psock, struct command_buf* cb){
 }
 
 // this is the only missing piece
-void eval_command(struct command* cmd, struct command_buf* output){
-    char* p;
+// TODO: list* should be changed to use s(n)printf
+// leave this as is for now for testing, see if all mechanisms are working properly
+// without correct responses
+// a call to eval_command() will result in one poll_pack being
+// broadcasted and output being populated
+void eval_command(polls* p, struct command* cmd, struct command_buf* output, struct maddr* local_addr){
+    char* s;
+    union packet payload = {0};
     memset(output->cmd, 0, sizeof(output->cmd));
     if (cmd->name && cmd->memo) {
-        p = stpcpy(output->cmd, cmd->name);
-        stpcpy(p, cmd->memo);
+        s = stpcpy(output->cmd, cmd->name);
+        stpcpy(s, cmd->memo);
     }
+    if (cmd->create && cmd->name) {
+        payload.new_poll.type = POLL_PKT;
+        memcpy(payload.new_poll.hdr.creator.addr, local_addr->addr, 6);
+        strcpy(payload.new_poll.info.poll_name, cmd->name);
+        if (cmd->memo) {
+            strcpy(payload.new_poll.info.memo, cmd->memo);
+        }
+    }
+    // no else, a user can create and vote in oen command
+    if (cmd->vote) {
+    }
+    broadcast_poll_pack(payload);
 }
 
 /* thread definitions */
@@ -465,6 +486,9 @@ void* cmd_thread(void* pv){
     struct sockaddr_un addr = {0};
     struct command cmd = {0};
     struct command_buf output;
+    struct maddr local_addr = {0};
+    // TODO: this can't be hardcoded
+    get_local_addr("wlp3s0", local_addr.addr);
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, SOCK_FN, sizeof(addr.sun_path));
     if (bind(sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1){
@@ -480,7 +504,7 @@ void* cmd_thread(void* pv){
         // NVM, CRASHES HERE I THINK
         // ah, i see, cmd->strs were garbage
         // wait, is there a chance that parse_args() buf isn't still in scope?
-        eval_command(&cmd, &output);
+        eval_command(p, &cmd, &output, &local_addr);
         if (cmd.name) {
             free(cmd.name);
             cmd.name = NULL;
@@ -531,6 +555,7 @@ void* lnotify_thread(void* pv){
             insert_results(&p_lookup.r, sender, pkt.vote.vote);
         }
     }
+    return NULL;
 }
 
 /* end thread definitions */
@@ -628,7 +653,7 @@ void test(polls* p, uint16_t n_opts){
 
     /*p_results(p, hdr.creator, hdr.poll_id, hdr.n_opts);*/
     uint8_t poll_id = 99;
-    list_polls(p, NULL, &poll_id, NULL, 1, 1);
+    list_polls(p, NULL, &poll_id, NULL, 1, 1, NULL);
 }
 
 void parse_args_test(char* str){
@@ -653,7 +678,7 @@ int main(int argc, char* argv[]){
  *     exit(0);
  * 
 */
-    uint8_t local_addr[6];
+    /*uint8_t local_addr[6];*/
     char* if_name;
     pthread_t cmd_th, ln_th;
     polls p;
@@ -669,7 +694,7 @@ int main(int argc, char* argv[]){
 
     if_name = argv[2];
     /*init_poll(&p, 4);*/
-    get_local_addr(if_name, local_addr);
+    /*get_local_addr(if_name, local_addr);*/
     /*p_maddr(local_addr);*/
     /*puts("");*/
     init_polls(&p, 100, hash_ph);
