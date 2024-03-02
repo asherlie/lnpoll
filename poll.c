@@ -507,6 +507,7 @@ void* lnotify_thread(void* pv){
     polls* p = pv;
     union packet pkt;
     struct maddr sender;
+    struct poll p_lookup;
     _Bool success;
 
     while (1) {
@@ -523,7 +524,11 @@ void* lnotify_thread(void* pv){
             insert_polls(p, pkt.new_poll.hdr, init_poll(&pkt.new_poll.info));
         }
         else if (pkt.vote.type == VOTE_PKT) {
-            
+            p_lookup = lookup_polls(p, pkt.vote.hdr, &success);
+            if (!success) {
+                continue;
+            }
+            insert_results(&p_lookup.r, sender, pkt.vote.vote);
         }
     }
 }
