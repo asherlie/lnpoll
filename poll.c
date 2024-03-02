@@ -397,7 +397,7 @@ void parse_args(struct command_buf* args, struct command* c){
 
         if (set_next) {
             // this assumes that command_buf is left intact, if not - strdup(i)
-            *set_next = i;
+            *set_next = strdup(i);
             set_next = NULL;
         }
         else if (!strcmp(i, "--start-poll")) {
@@ -431,21 +431,25 @@ void parse_args(struct command_buf* args, struct command* c){
     }
 }
 
-struct command process_input(int psock){
-    struct command ret;
-    struct command_buf buf;
+// TODO: struct command* should prob be passed as arg
+void process_input(int psock, struct command* c){
+    struct command_buf buf = {0};
     read(psock, buf.cmd, sizeof(buf.cmd));
-    parse_args(&buf, &ret);
-    return ret;
+    parse_args(&buf, c);
 }
 
 void send_output(int psock, struct command_buf* cb){
     write(psock, cb->cmd, sizeof(cb->cmd));
 }
 
-struct command_buf eval_command(struct command* cmd){
-    struct command_buf ret = {0};
-    return ret;
+// this is the only missing piece
+void eval_command(struct command* cmd, struct command_buf* output){
+    char* p;
+    memset(output->cmd, 0, sizeof(output->cmd));
+    if (cmd->name && cmd->memo) {
+        p = stpcpy(output->cmd, cmd->name);
+        stpcpy(p, cmd->memo);
+    }
 }
 
 /* thread definitions */
@@ -455,19 +459,33 @@ void* cmd_thread(void* fpv){
     char* fp = fpv;
     int sock = socket(AF_UNIX, SOCK_STREAM, 0), psock;
     struct sockaddr_un addr = {0};
-    struct command cmd;
+    struct command cmd = {0};
     struct command_buf output;
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, fp, sizeof(addr.sun_path));
     if (bind(sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1){
+        // TODO: hmm, this may just be because it exists already. can ignore this
         return NULL;
     }
     listen(sock, 0);
 
     while (1) {
         psock = accept(sock, NULL, NULL);
-        cmd = process_input(psock);
-        output = eval_command(&cmd);
+        /*memset(cmd.cmd, 0, sizeof(cmd.cmd));*/
+        process_input(psock, &cmd);
+        // NVM, CRASHES HERE I THINK
+        // ah, i see, cmd->strs were garbage
+        // wait, is there a chance that parse_args() buf isn't still in scope?
+        eval_command(&cmd, &output);
+        if (cmd.name) {
+            free(cmd.name);
+            cmd.name = NULL;
+        }
+        if (cmd.memo) {
+            free(cmd.memo);
+            cmd.memo= NULL;
+        }
+        // CRASH IMMEDIATELY AFTER CALLING SEND_OUTPUT
         send_output(psock, &output);
         close(psock);
     }
@@ -496,7 +514,8 @@ void client(int argc, char** argv, char* fp){
     strncpy(addr.sun_path, fp, sizeof(addr.sun_path));
 
     for (int i = 1; i < argc; ++i) {
-        p = stpcpy(p , argv[i]);
+        p = stpcpy(p, argv[i]);
+        p = stpcpy(p, " ");
     }
 
     if (connect(sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1) {
@@ -505,6 +524,9 @@ void client(int argc, char** argv, char* fp){
     
     // TODO: check bytes written
     write(sock, cb.cmd, sizeof(cb.cmd));
+    memset(cb.cmd, 0, sizeof(cb.cmd));
+    read(sock, cb.cmd, sizeof(cb.cmd));
+    printf("\"%s\"\n", cb.cmd);
 }
 
 
@@ -589,8 +611,15 @@ void parse_args_test(char* str){
 
 int main(int argc, char* argv[]){
     /*client(argv, argc);*/
-    parse_args_test(argv[1]);
+    /*
+     * parse_args_test(argv[1]);
+     * exit(0);
+    */
+
+    cmd_thread("SOCK.s");
+    client(argc, argv, "SOCK.s");
     exit(0);
+
     uint8_t local_addr[6];
     char* if_name;
     polls p;
