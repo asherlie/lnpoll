@@ -4,6 +4,9 @@
 #include <sys/un.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#include <pthread.h>
+
+#define SOCK_FN "/tmp/lnpoll.s"
 // NOTE: keys must be memset to 0 to zero the garbage bytes
 // TODO: replace all local_addrs with something smarter
 // TODO: unix sockets will be used to send commands to daemon and receive output
@@ -455,14 +458,14 @@ void eval_command(struct command* cmd, struct command_buf* output){
 /* thread definitions */
 
 // set up a unix socket, bind to a fn, await connections
-void* cmd_thread(void* fpv){
-    char* fp = fpv;
+void* cmd_thread(void* pv){
+    polls* p = pv;
     int sock = socket(AF_UNIX, SOCK_STREAM, 0), psock;
     struct sockaddr_un addr = {0};
     struct command cmd = {0};
     struct command_buf output;
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, fp, sizeof(addr.sun_path));
+    strncpy(addr.sun_path, SOCK_FN, sizeof(addr.sun_path));
     if (bind(sock, (struct sockaddr*)&addr, sizeof(struct sockaddr_un)) == -1){
         // TODO: hmm, this may just be because it exists already. can ignore this
         return NULL;
@@ -483,7 +486,7 @@ void* cmd_thread(void* fpv){
         }
         if (cmd.memo) {
             free(cmd.memo);
-            cmd.memo= NULL;
+            cmd.memo = NULL;
         }
         // CRASH IMMEDIATELY AFTER CALLING SEND_OUTPUT
         send_output(psock, &output);
@@ -492,13 +495,16 @@ void* cmd_thread(void* fpv){
     return NULL;
 }
 
-void* lnotify_thread(void* arg){
+void* lnotify_thread(void* pv){
+    polls* p = pv;
     _Bool success;
-    (void)arg;
 
     while (1) {
         /*broadcast*/
         recv_poll_pack(&success);
+        if (!success) {
+            continue;
+        }
     }
 }
 
@@ -513,7 +519,7 @@ void client(int argc, char** argv, char* fp){
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, fp, sizeof(addr.sun_path));
 
-    for (int i = 1; i < argc; ++i) {
+    for (int i = 0; i < argc; ++i) {
         p = stpcpy(p, argv[i]);
         p = stpcpy(p, " ");
     }
@@ -612,28 +618,43 @@ void parse_args_test(char* str){
 int main(int argc, char* argv[]){
     /*client(argv, argc);*/
     /*
-     * parse_args_test(argv[1]);
+     * parse_args_test(argv[2]);
      * exit(0);
     */
 
-    cmd_thread("SOCK.s");
-    client(argc, argv, "SOCK.s");
-    exit(0);
-
+/*
+ *     cmd_thread("SOCK.s");
+ *     client(argc, argv, "SOCK.s");
+ *     exit(0);
+ * 
+*/
     uint8_t local_addr[6];
     char* if_name;
+    pthread_t cmd_th, ln_th;
     polls p;
 
-    if (argc < 2) {
+    if (argc < 3) {
         return 1;
     }
 
-    if_name = argv[1];
+    if (*argv[1] == 'c') {
+        client(argc - 2, argv + 2, SOCK_FN);
+        return 0;
+    }
+
+    if_name = argv[2];
     /*init_poll(&p, 4);*/
     get_local_addr(if_name, local_addr);
     /*p_maddr(local_addr);*/
     /*puts("");*/
     init_polls(&p, 100, hash_ph);
+
+    // spawn lnotify thread and command thread
+    pthread_create(&ln_th, NULL, lnotify_thread, &p);
+    pthread_create(&cmd_th, NULL, cmd_thread, &p);
+    
+    pthread_join(cmd_th, NULL);
+    pthread_join(ln_th, NULL);
 
     test(&p, 10);
 }
