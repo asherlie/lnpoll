@@ -156,6 +156,7 @@ struct poll{
 };
 
 /*register_lockfree_hash(struct poll_hdr, struct poll_info, polls)*/
+// TODO: this should probably be poll_hdr -> poll*
 register_lockfree_hash(struct poll_hdr, struct poll, polls)
 
 
@@ -495,15 +496,34 @@ void* cmd_thread(void* pv){
     return NULL;
 }
 
+struct poll init_poll(struct poll_info* pi){
+    struct poll p;
+    memcpy(&p.info, pi, sizeof(struct poll_info));
+    init_results(&p.r, 100, hash_ma);
+    return p;
+}
+
 void* lnotify_thread(void* pv){
     polls* p = pv;
+    union packet pkt;
+    struct maddr sender;
     _Bool success;
 
     while (1) {
         /*broadcast*/
-        recv_poll_pack(&success);
+        pkt = recv_poll_pack(&success, sender.addr);
         if (!success) {
             continue;
+        }
+        // only create a new poll if it is confirmed
+        if (pkt.new_poll.type == POLL_PKT) {
+            if (memcmp(sender.addr, pkt.new_poll.hdr.creator.addr, 6)) {
+                continue;
+            }
+            insert_polls(p, pkt.new_poll.hdr, init_poll(&pkt.new_poll.info));
+        }
+        else if (pkt.vote.type == VOTE_PKT) {
+            
         }
     }
 }
