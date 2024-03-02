@@ -655,15 +655,4 @@ int main(int argc, char* argv[]){
     
     pthread_join(cmd_th, NULL);
     pthread_join(ln_th, NULL);
-
-    test(&p, 10);
 }
-
-/*
- * hmm, if i'm just waiting for localnotifies in a thread then there's a chance of missing an alert while we're busy
- * discarding an irrelevant one or processing a releavant one
- * 
- * NVM, i believe recvfrom() just pops from a queue for a socket. the syscall will handle the backlog
- * 
- * i can just have a reader thread that gets notifies, receives an action struct, and calls take_action(action struct)
-*/
