@@ -134,7 +134,7 @@ struct maddr{
 //  all users can vote using same field
 struct poll_hdr{
     struct maddr creator;
-    uint8_t poll_id;
+    uint16_t poll_id;
     /*char poll_name[31];*/
     // TODO: remove n_opts if possible, or create a new struct
     // to use as key for lfh
@@ -387,7 +387,11 @@ struct command_buf{
 
 // this is only meant to be passed around locally, name is a pointer to the stack
 struct command{
-    _Bool create, vote, list, get_results, unvoted_only;
+    _Bool create, vote, list, get_results, unvoted_only,
+          poll_id, n_opts, creator;
+    uint16_t vote_v, n_opts_v, poll_id_v;
+    struct maddr creator_v;
+    /*uint8_t poll_id_v;*/
     char* name;
     char* memo;
 };
@@ -397,15 +401,38 @@ void p_command(struct command* c){
         c->create, c->vote, c->list, c->get_results, c->unvoted_only, c->name, c->memo);
 }
 
+// TODO: get this working
+// TODO: this may have to be passed a maddr pointer
+void parse_maddr(char* s, struct maddr* addr){
+    /*still doesn't work, hmm*/
+    addr->addr[5] = 0xde;
+    /*scanf*/
+    (void)s;
+}
+
 void parse_args(struct command_buf* args, struct command* c){
     char** set_next = NULL;
+    uint16_t* set_next_i = NULL;
+    struct maddr* set_next_a = NULL;
     for (char* i = args->cmd, * sp = strchr(args->cmd, ' '); i && *i; sp = strchr(i, ' ')) {
         if(sp)*sp = 0;
 
-        if (set_next) {
+        if (set_next_i) {
+            // TODO: doin't use atoi
+            *set_next_i = atoi(i);
+            set_next_i = NULL;
+        }
+        else if (set_next) {
             // this assumes that command_buf is left intact, if not - strdup(i)
             *set_next = strdup(i);
             set_next = NULL;
+        }
+        else if (set_next_a) {
+            parse_maddr(i, set_next_a);
+            puts("from parser");
+            p_maddr(c->creator_v.addr);
+            puts("");
+            set_next_a = NULL;
         }
         else if (!strcmp(i, "--start-poll")) {
             c->create = 1;
@@ -418,6 +445,19 @@ void parse_args(struct command_buf* args, struct command* c){
         }
         else if (!strcmp(i, "--vote")) {
             c->vote = 1;
+            set_next_i = &c->vote_v;
+        }
+        else if (!strcmp(i, "--poll-id")) {
+            c->poll_id = 1;
+            set_next_i = &c->poll_id_v;
+        }
+        else if (!strcmp(i, "--n-opts")) {
+            c->n_opts = 1;
+            set_next_i = &c->n_opts_v;
+        }
+        else if (!strcmp(i, "--creator")) {
+            c->creator = 1;
+            set_next_a = &c->creator_v;
         }
         else if (!strcmp(i, "--list")) {
             c->list = 1;
@@ -457,24 +497,47 @@ void send_output(int psock, struct command_buf* cb){
 // broadcasted and output being populated
 void eval_command(polls* p, struct command* cmd, struct command_buf* output, struct maddr* local_addr){
     char* s;
-    union packet payload = {0};
+    union packet payload_c = {0};
+    union packet payload_v = {0};
     memset(output->cmd, 0, sizeof(output->cmd));
     if (cmd->name && cmd->memo) {
         s = stpcpy(output->cmd, cmd->name);
         stpcpy(s, cmd->memo);
     }
     if (cmd->create && cmd->name) {
-        payload.new_poll.type = POLL_PKT;
-        memcpy(payload.new_poll.hdr.creator.addr, local_addr->addr, 6);
-        strcpy(payload.new_poll.info.poll_name, cmd->name);
+        payload_c.new_poll.type = POLL_PKT;
+        memcpy(payload_c.new_poll.hdr.creator.addr, local_addr->addr, 6);
+        payload_c.new_poll.hdr.poll_id = cmd->poll_id_v;
+        payload_c.new_poll.hdr.n_opts = cmd->n_opts_v;
+
+        /*
+         * the rest of the hdr fields must be set
+         * this should be added to parse_args()
+         * we need to gather poll_id, n_opts
+         * this is also crucial for vote()
+        */
+
+        strcpy(payload_c.new_poll.info.poll_name, cmd->name);
         if (cmd->memo) {
-            strcpy(payload.new_poll.info.memo, cmd->memo);
+            strcpy(payload_c.new_poll.info.memo, cmd->memo);
         }
+        broadcast_poll_pack(payload_c);
     }
     // no else, a user can create and vote in oen command
+    // TODO: if this causes problems, add an else
     if (cmd->vote) {
+        payload_v.vote.type = VOTE_PKT;
+        payload_v.vote.hdr.creator = cmd->creator_v;
+        payload_v.vote.hdr.poll_id = cmd->poll_id_v;
+        payload_v.vote.hdr.n_opts = cmd->n_opts_v;
+
+        payload_v.vote.vote = cmd->vote_v;
+        broadcast_poll_pack(payload_v);
     }
-    broadcast_poll_pack(payload);
+    /* TODO: implement other commands
+     * if (cmd->...) {
+     * }
+    */
 }
 
 /* thread definitions */
@@ -501,6 +564,9 @@ void* cmd_thread(void* pv){
         psock = accept(sock, NULL, NULL);
         /*memset(cmd.cmd, 0, sizeof(cmd.cmd));*/
         process_input(psock, &cmd);
+        puts("FROM CMD thread");
+        p_maddr(cmd.creator_v.addr);
+        puts("");
         // NVM, CRASHES HERE I THINK
         // ah, i see, cmd->strs were garbage
         // wait, is there a chance that parse_args() buf isn't still in scope?
@@ -527,28 +593,55 @@ struct poll init_poll(struct poll_info* pi){
     return p;
 }
 
+// can i pass messages from here to the cmd thread for response?
+// it's diffucult because this is done through lnotify()
 void* lnotify_thread(void* pv){
     polls* p = pv;
     union packet pkt;
     struct maddr sender;
     struct poll p_lookup;
-    _Bool success;
+    _Bool success, skip;
 
     while (1) {
         /*broadcast*/
+        skip = 0;
+        /*
+         * ah, i think that the actual SENDER that's set
+         * in lnotify is incorrect, good. i think i've found
+         * the issue!
+         * i need to find a diff way to get and pass this
+         * nvm, it's sender that's bad
+         * wait, i think i can undo my change of a new arg for recv_poll_pack()
+        */
         pkt = recv_poll_pack(&success, sender.addr);
+        // doesn't matter which member is used to get hdr
         if (!success) {
             continue;
         }
+        p_lookup = lookup_polls(p, pkt.vote.hdr, &success);
         // only create a new poll if it is confirmed
         if (pkt.new_poll.type == POLL_PKT) {
+            puts("CREATE");
             if (memcmp(sender.addr, pkt.new_poll.hdr.creator.addr, 6)) {
+            /*if (memcmp(pkt.new_poll.hdr, pkt.new_poll.hdr.creator.addr, 6)) {*/
+                printf("sender FROM actual packet header: ");
+                p_maddr(sender.addr);
+                printf("\nassumed creator: ");
+                p_maddr(pkt.new_poll.hdr.creator.addr);
+                skip = 1;
+                puts("refusing to create due to maddr mismatch");
+            }
+            if (success) {
+                puts("refusing to create due to existing poll");
+                skip = 1;
+            }
+            if (skip) {
                 continue;
             }
             insert_polls(p, pkt.new_poll.hdr, init_poll(&pkt.new_poll.info));
         }
         else if (pkt.vote.type == VOTE_PKT) {
-            p_lookup = lookup_polls(p, pkt.vote.hdr, &success);
+            puts("VOTE");
             if (!success) {
                 continue;
             }
